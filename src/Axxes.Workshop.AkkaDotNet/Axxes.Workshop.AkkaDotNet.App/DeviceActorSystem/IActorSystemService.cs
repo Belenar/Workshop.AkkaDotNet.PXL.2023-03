@@ -2,7 +2,7 @@
 
 namespace Axxes.Workshop.AkkaDotNet.App.DeviceActorSystem;
 
-interface IActorSystemService
+public interface IActorSystemService
 {
     void SendMeasurement(Guid deviceId, MeterReadingReceived message);
     Task StopAsync(CancellationToken cancellationToken);

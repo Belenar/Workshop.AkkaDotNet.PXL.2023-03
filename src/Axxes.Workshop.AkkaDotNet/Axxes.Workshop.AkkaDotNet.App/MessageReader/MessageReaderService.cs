@@ -1,21 +1,26 @@
 ﻿using System.Text;
 using Axxes.Workshop.AkkaDotNet.App.DeviceActorSystem;
 using Axxes.Workshop.AkkaDotNet.App.Messages;
-using Microsoft.Azure.EventHubs;
+using Azure;
+using Azure.Messaging.EventHubs;
+using Azure.Messaging.EventHubs.Consumer;
+using Azure.Messaging.EventHubs.Processor;
+using Azure.Storage.Blobs;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 
 namespace Axxes.Workshop.AkkaDotNet.App.MessageReader;
 
-class MessageReaderService : BackgroundService
+public class MessageReaderService : BackgroundService
 {
     private readonly ILogger<MessageReaderService> _logger;
     private readonly IotHubSettings _iotHubSettings;
     private readonly IActorSystemService _actorSystem;
-    private EventHubClient? _eventHubClient;
+    private EventProcessorClient? _eventHubClient;
 
-    public MessageReaderService(ILogger<MessageReaderService> logger, IotHubSettings iotHubSettings, IActorSystemService actorSystem)
+    public MessageReaderService(ILogger<MessageReaderService> logger, IotHubSettings iotHubSettings,
+        IActorSystemService actorSystem)
     {
         _logger = logger;
         _iotHubSettings = iotHubSettings;
@@ -25,69 +30,87 @@ class MessageReaderService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Creating a client for the EventHub");
-
-        var connectionString = new EventHubsConnectionStringBuilder(
-            new Uri(_iotHubSettings.EventHubEndpoint),
-            _iotHubSettings.EventHubPath,
-            _iotHubSettings.SasKeyName,
-            _iotHubSettings.SasKey);
-
-        _eventHubClient = EventHubClient.CreateFromConnectionString(connectionString.ToString());
-
-        // Create a PartitionReceiver for each partition.
-        var runtimeInfo = await _eventHubClient.GetRuntimeInformationAsync();
-        var partitionIds = runtimeInfo.PartitionIds;
-
-        var partitionReceivers = new List<Task>();
-        foreach (string partition in partitionIds)
+        try
         {
-            partitionReceivers.Add(ReceiveMessagesFromPartitionAsync(partition, stoppingToken));
-        }
+            // Create a random storage container, so the full stream will be read. DO NOT DO THIS for production. 
+            var storageClient = await CreateBlobContainerClient();
 
-        // Wait for all the PartitionReceivers to finish.
-        Task.WaitAll(partitionReceivers.ToArray());
+            var consumerGroup = EventHubConsumerClient.DefaultConsumerGroupName;
+
+            _eventHubClient = new EventProcessorClient(storageClient, consumerGroup, _iotHubSettings.EventHubConnectionString);
+
+            _eventHubClient.ProcessEventAsync += ProcessEventAsync;
+            _eventHubClient.ProcessErrorAsync += ProcessErrorAsync;
+            _eventHubClient.PartitionInitializingAsync += PartitionInitialization;
+
+            await _eventHubClient.StartProcessingAsync(stoppingToken);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e.Message);
+        }
     }
 
-    private async Task ReceiveMessagesFromPartitionAsync(string partition, CancellationToken ct)
+    private Task PartitionInitialization(PartitionInitializingEventArgs arg)
     {
-        // Create the receiver using the default consumer group.
-        var getMessagesSince = DateTime.UtcNow.AddDays(-1);
-        if (_eventHubClient == null) throw new Exception("Client not initialized");
-        var eventHubReceiver = _eventHubClient.CreateReceiver("$Default", partition, EventPosition.FromEnqueuedTime(getMessagesSince));
+        arg.DefaultStartingPosition = EventPosition.Earliest;
+        return Task.CompletedTask;
+    }
 
-        _logger.LogInformation($"Creating a receiver on partition {partition}");
+    private async Task<BlobContainerClient> CreateBlobContainerClient()
+    {
+        var blobClient = new BlobServiceClient(_iotHubSettings.BlobStorageConnectionString);
 
-        while (true)
+        var containerName = $"checkpoint-{Guid.NewGuid()}";
+
+        try
         {
-            if (ct.IsCancellationRequested) break;
+            BlobContainerClient container = await blobClient.CreateBlobContainerAsync(containerName);
 
-            _logger.LogDebug($"Listening for messages on {partition}");
-
-            var events = await eventHubReceiver.ReceiveAsync(100);
-
-            if (events == null) continue;
-
-            foreach (var eventData in events)
+            if (await container.ExistsAsync())
             {
-                Guid.TryParse(eventData.SystemProperties["iothub-connection-device-id"].ToString(), out var deviceId);
-
-                var message = GetMessageContent(eventData);
-
-                _actorSystem.SendMeasurement(deviceId, message);
+                _logger.LogInformation("Created container {0}", container.Name);
+                return container;
             }
         }
+        catch (RequestFailedException)
+        {
+            _logger.LogError("Failed to create BLOB container.");
+            throw new Exception("Failed to create BLOB container.");
+        }
+
+        _logger.LogError("Failed to create BLOB container.");
+        throw new Exception("Failed to create BLOB container.");
     }
 
-    private static MeterReadingReceived GetMessageContent(EventData eventData)
+    private async Task ProcessEventAsync(ProcessEventArgs arg)
     {
-        var data = Encoding.UTF8.GetString(eventData.Body.Array ?? Array.Empty<byte>());
+        Guid.TryParse(arg.Data.SystemProperties["iothub-connection-device-id"].ToString(), out var deviceId);
 
-        return JsonConvert.DeserializeObject<MeterReadingReceived>(data);
+        var message = GetMessageContent(arg.Data);
+        if(message != null)
+            _actorSystem.SendMeasurement(deviceId, message);
+
+        await arg.UpdateCheckpointAsync(arg.CancellationToken);
+    }
+
+    private Task ProcessErrorAsync(ProcessErrorEventArgs arg)
+    {
+        _logger.LogError($"Partition '{arg.PartitionId}': an unhandled exception was encountered: {arg.Exception.Message}");
+        return Task.CompletedTask;
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        await _actorSystem.StopAsync(cancellationToken);
+        if(_eventHubClient != null)
+            await _eventHubClient.StopProcessingAsync(cancellationToken);
         await base.StopAsync(cancellationToken);
+    }
+
+    private static MeterReadingReceived? GetMessageContent(EventData eventData)
+    {
+        var data = Encoding.UTF8.GetString(eventData.Body.ToArray());
+
+        return JsonConvert.DeserializeObject<MeterReadingReceived>(data);
     }
 }
