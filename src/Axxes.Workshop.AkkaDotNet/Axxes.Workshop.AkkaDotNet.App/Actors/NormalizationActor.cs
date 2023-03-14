@@ -4,12 +4,41 @@ using Axxes.Workshop.AkkaDotNet.App.Messages;
 
 namespace Axxes.Workshop.AkkaDotNet.App.Actors;
 
-public class NormalizationActor: ReceiveActor
+public class NormalizationActor: ReceiveActor, IWithUnboundedStash
 {
     private readonly ValueNormalizationHelper _helper = new();
+
     public NormalizationActor()
     {
+        Become(Started);
+    }
+
+    private void Started()
+    {
+        Receive<MeterReadingReceived>(_ => Stash.Stash());
+        Receive<ReturnLastNormalizedReadings>(Initialize);
+    }
+
+    private void Initialized()
+    {
         Receive<MeterReadingReceived>(HandleMeterReading);
+    }
+
+    private void Initialize(ReturnLastNormalizedReadings readings)
+    {
+        var lastReading = readings.Readings.FirstOrDefault();
+        if (lastReading != null)
+            _helper.GetNormalizedReadingsUntil(lastReading.Timestamp, lastReading.MeterReading);
+
+        Become(Initialized);
+        Stash.UnstashAll();
+    }
+
+    
+
+    protected override void PreStart()
+    {
+        Context.Parent.Tell(new RequestLastNormalizedReadings(1));
     }
 
     private void HandleMeterReading(MeterReadingReceived reading)
@@ -27,4 +56,6 @@ public class NormalizationActor: ReceiveActor
     {
         return Props.Create<NormalizationActor>();
     }
+
+    public IStash Stash { get; set; }
 }
