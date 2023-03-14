@@ -1,24 +1,40 @@
-﻿using Axxes.Workshop.AkkaDotNet.App.Messages;
+﻿using Akka.Actor;
+using Axxes.Workshop.AkkaDotNet.App.Actors;
+using Axxes.Workshop.AkkaDotNet.App.Messages;
 
 namespace Axxes.Workshop.AkkaDotNet.App.DeviceActorSystem;
 
 class ActorSystemService : IActorSystemService
 {
+    private readonly ActorSystem _system;
     private const string ActorSystemName = "DeviceActorSystem";
+    private readonly Dictionary<Guid, IActorRef> _deviceActors = new ();
 
     public ActorSystemService()
     {
-        //TODO: Create an ActorSystem
+        _system = ActorSystem.Create(ActorSystemName);
     }
 
     public void SendMeasurement(Guid deviceId, MeterReadingReceived message)
     {
-        //TODO: Check if the actor for this device needs to be created.
-        //TODO: send the message to the actor;
+        if (!_deviceActors.ContainsKey(deviceId))
+        {
+            CreateDeviceActor(deviceId);
+        }
+        _deviceActors[deviceId].Tell(message);
+    }
+
+    private void CreateDeviceActor(Guid deviceId)
+    {
+        var props = Props.Create<DeviceActor>(deviceId);
+        var name = $"device-{deviceId}";
+        _deviceActors[deviceId] = _system.ActorOf(props, name);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        //TODO: shutdown the ActorSystem correctly.
+        var shutdown = CoordinatedShutdown.Get(_system);
+
+        await shutdown.Run( CoordinatedShutdown.ClrExitReason.Instance);
     }
 }
