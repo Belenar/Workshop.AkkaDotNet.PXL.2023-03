@@ -1,4 +1,5 @@
 ﻿using Akka.Actor;
+using Akka.Configuration;
 using Axxes.Workshop.AkkaDotNet.App.Actors;
 using Axxes.Workshop.AkkaDotNet.App.Messages;
 
@@ -12,7 +13,9 @@ class ActorSystemService : IActorSystemService
 
     public ActorSystemService()
     {
-        _system = ActorSystem.Create(ActorSystemName);
+        var hoconContent = File.ReadAllText("akka.hocon");
+        var config = ConfigurationFactory.ParseString(hoconContent);
+        _system = ActorSystem.Create(ActorSystemName, config);
     }
 
     public void SendMeasurement(Guid deviceId, MeterReadingReceived message)

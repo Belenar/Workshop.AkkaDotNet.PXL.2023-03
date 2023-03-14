@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <PackageReference Include="Akka" Version="1.4.49" />
+    <PackageReference Include="Akka.Persistence.SqlServer" Version="1.4.35" />
     <PackageReference Include="Azure.Messaging.EventHubs.Processor" Version="5.8.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="7.0.1" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
