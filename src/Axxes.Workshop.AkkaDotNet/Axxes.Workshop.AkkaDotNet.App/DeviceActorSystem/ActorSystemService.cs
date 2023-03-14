@@ -26,7 +26,7 @@ class ActorSystemService : IActorSystemService
 
     private void CreateDeviceActor(Guid deviceId)
     {
-        var props = Props.Create<DeviceActor>(deviceId);
+        var props = DeviceActor.CreateProps(deviceId);
         var name = $"device-{deviceId}";
         _deviceActors[deviceId] = _system.ActorOf(props, name);
     }
